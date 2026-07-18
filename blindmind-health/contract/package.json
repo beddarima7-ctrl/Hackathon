@@ -5,10 +5,9 @@
   "type": "module",
   "scripts": {
     "compact:build": "compact compile src/main.compact managed/main",
-    "build": "tsc -p tsconfig.json",
-    "clean": "rimraf managed dist",
-    "typecheck": "tsc --noEmit"
-  },
+    "typecheck": "node node_modules/typescript/lib/tsc.js --noEmit",
+    "build": "node node_modules/typescript/lib/tsc.js -p tsconfig.json"
+},
   "dependencies": {
     "@midnight-ntwrk/compact-runtime": "0.16.0",
     "@midnight-ntwrk/midnight-js-types": "4.1.1",
