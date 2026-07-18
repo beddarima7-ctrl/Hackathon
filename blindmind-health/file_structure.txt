@@ -1,0 +1,26 @@
+blindmind-health/
+├── README.md                      # Master setup guide for the engineering judges
+│
+├── contract/                      # Rafan's Workspace (Blockchain & ZK Engine)
+│   ├── package.json               # Midnight SDK & dependency manager
+│   ├── tsconfig.json              # TypeScript compilation rules
+│   ├── src/
+│   │   └── main.compact           # Your Midnight Compact smart contract file
+│   └── managed/                   # AUTO-GENERATED after running compiler
+│       └── main/                  # Contains your ZK keys, circuits, and TS bindings
+│
+├── backend/                       # Rima's Workspace (Local Private AI Engine)
+│   ├── main.py                    # FastAPI application server running DistilBERT
+│   └── requirements.txt           # Python dependencies (transformers, torch, fastapi)
+│
+└── frontend/                      # Saiem's Workspace (React & Tailwind UI)
+    ├── package.json               # Frontend dependencies & scripts
+    ├── vite.config.js             # Vite development server configuration
+    ├── tailwind.config.js         # Tailwind utility styles configuration
+    ├── postcss.config.js          # CSS processing rules
+    ├── index.html                 # Main application entry HTML shell
+    └── src/
+        ├── index.css              # Global styles importing Tailwind
+        ├── main.jsx               # React DOM rendering root
+        ├── App.jsx                # Primary Visual Dashboard Hub
+        └── components/            # Modular dashboard UI panels & status cards
