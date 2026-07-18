@@ -1,19 +1,23 @@
-import hashlib
+import gc
 import json
-from datetime import datetime, timezone
-from fastapi import FastAPI, UploadFile, File, HTTPException
+import logging
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+from threading import Lock
+
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from transformers import pipeline
+from pydantic import BaseModel, Field
 
-MODEL_NAME = "distilbert-base-uncased-finetuned-sst-2-english"
-MAX_TOKENS_PER_CHUNK = 480
-CHUNK_OVERLAP = 40
-MAX_FILE_SIZE_BYTES = 2 * 1024 * 1024  # 2MB
+from config import MAX_INPUT_CHARS, HISTORY_FILE, HISTORY_RETENTION_DAYS
+from ai_engine import load_model, generate_reflection
+from zk_crypto import generate_zk_commitment, generate_salt
 
-app = FastAPI(title="BlindMind Health Analyzer", version="0.1.0")
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("main")
 
-# Enables saiem's frontend workspace container to fetch data safely
+app = FastAPI(title="BlindMind Health — Dual-Engine AI + ZK Layer", version="0.3.0")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://localhost:3000"],
@@ -21,88 +25,117 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-print("Loading local transformer model pipeline...")
-sentiment_pipeline = pipeline("sentiment-analysis", model=MODEL_NAME, tokenizer=MODEL_NAME, truncation=True)
-tokenizer = sentiment_pipeline.tokenizer
-print("Model attached. Server unblocked.")
+_history_lock = Lock()
+_history_path = Path(HISTORY_FILE)
 
-class AnalysisResponse(BaseModel):
-    wallet_id_hash: str
-    wellness_score: int
-    record_commitment_hash: str
-    timestamp_utc: str
-    chunks_analyzed: int
 
-def chunk_text(raw_text: str) -> list[str]:
-    token_ids = tokenizer.encode(raw_text, add_special_tokens=False)
-    if not token_ids:
-        raise ValueError("Input text produced empty token sequences.")
+@app.on_event("startup")
+async def startup():
+    load_model()
 
-    chunks: list[str] = []
-    start = 0
-    step = MAX_TOKENS_PER_CHUNK - CHUNK_OVERLAP
-    while start < len(token_ids):
-        end = min(start + MAX_TOKENS_PER_CHUNK, len(token_ids))
-        chunk_text_decoded = tokenizer.decode(token_ids[start:end], skip_special_tokens=True)
-        chunks.append(chunk_text_decoded)
-        if end == len(token_ids):
-            break
-        start += step
 
-    chunks = [c for c in chunks if c.strip()]
-    if not chunks:
-        raise ValueError("No usable text content after chunking.")
+class JournalRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=MAX_INPUT_CHARS)
 
-    return chunks
 
-def compute_wellness_score(chunks: list[str]) -> int:
-    results = sentiment_pipeline(chunks)
-    weighted_total = 0.0
-    for result in results:
-        polarity = result["score"] if result["label"] == "POSITIVE" else (1.0 - result["score"])
-        weighted_total += polarity
-    score = round((weighted_total / len(results)) * 100)
-    return max(0, min(100, score))
+class ReflectionResponse(BaseModel):
+    conversation: str
+    feedback: str
+    mood_score: int
+    anxiety_score: int
+    resilience_score: int
+    themes: list[str]
+    engine_used: str
+    commitment_hash: str
+    salt: str
+    disclaimer: str
 
-@app.post("/analyze", response_model=AnalysisResponse)
-async def analyze(wallet_pubkey: str, file: UploadFile = File(...)):
-    if file.content_type not in ("text/plain", "application/octet-stream"):
-        raise HTTPException(status_code=400, detail="Sandbox only accepts plain text (.txt) files.")
 
-    raw_bytes = await file.read()
+def _load_history() -> list[dict]:
+    if not _history_path.exists():
+        return []
+    try:
+        return json.loads(_history_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
 
-    if len(raw_bytes) > MAX_FILE_SIZE_BYTES:
-        raise HTTPException(status_code=413, detail="File exceeds 2MB limit.")
 
-    if not raw_bytes:
-        raise HTTPException(status_code=400, detail="Target text payload is empty.")
+def _save_history(records: list[dict]) -> None:
+    _history_path.write_text(json.dumps(records, indent=2), encoding="utf-8")
+
+
+def _append_history(mood: int, anxiety: int, resilience: int, themes: list[str], commitment_hash: str) -> None:
+    """Stores ONLY aggregate numeric scores + categorical themes + hash.
+    Raw journal text is never written here."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=HISTORY_RETENTION_DAYS)
+    with _history_lock:
+        records = _load_history()
+        records = [
+            r for r in records
+            if datetime.fromisoformat(r["timestamp_utc"]) > cutoff
+        ]
+        records.append({
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "mood_score": mood,
+            "anxiety_score": anxiety,
+            "resilience_score": resilience,
+            "themes": themes,
+            "commitment_hash": commitment_hash,
+        })
+        _save_history(records)
+
+
+@app.post("/reflect", response_model=ReflectionResponse)
+async def reflect(payload: JournalRequest):
+    journal_text = payload.text.strip()
+    if not journal_text:
+        raise HTTPException(status_code=400, detail="Journal text cannot be empty.")
 
     try:
-        raw_text = raw_bytes.decode("utf-8")
-    except UnicodeDecodeError:
-        raise HTTPException(status_code=400, detail="File encoding must be clean UTF-8.")
+        result = generate_reflection(journal_text)
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Both local and cloud engines failed — no data was fabricated. ({exc})",
+        )
+    finally:
+        journal_text = None
+        del payload
+        gc.collect()
 
-    try:
-        chunks = chunk_text(raw_text)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-
-    wellness_score = compute_wellness_score(chunks)
-    timestamp = datetime.now(timezone.utc).isoformat()
-
-    # Hash generated directly from the stable text bytes.
-    # This matches the Bytes<32> registerHealthAnchor structure in main.compact.
-    record_commitment_hash = hashlib.sha256(raw_bytes).hexdigest()
-    wallet_id_hash = hashlib.sha256(wallet_pubkey.encode("utf-8")).hexdigest()
-
-    return AnalysisResponse(
-        wallet_id_hash=wallet_id_hash,
-        wellness_score=wellness_score,
-        record_commitment_hash=record_commitment_hash,
-        timestamp_utc=timestamp,
-        chunks_analyzed=len(chunks),
+    salt = generate_salt()
+    commitment_hash = generate_zk_commitment(
+        result["mood_score"], result["anxiety_score"], result["resilience_score"], salt,
     )
+
+    _append_history(
+        result["mood_score"], result["anxiety_score"], result["resilience_score"],
+        result["themes"], commitment_hash,
+    )
+
+    return ReflectionResponse(
+        conversation=result["conversation"],
+        feedback=result["feedback"],
+        mood_score=result["mood_score"],
+        anxiety_score=result["anxiety_score"],
+        resilience_score=result["resilience_score"],
+        themes=result["themes"],
+        engine_used=result["engine_used"],
+        commitment_hash=commitment_hash,
+        salt=salt,
+        disclaimer=(
+            "This is a supportive journaling companion, not a licensed "
+            "therapist. If you're in crisis, please reach out to a mental "
+            "health professional or crisis line."
+        ),
+    )
+
+
+@app.get("/history")
+async def get_history():
+    return _load_history()
+
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "model": MODEL_NAME}
+    return {"status": "ok"}
