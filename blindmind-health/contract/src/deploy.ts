@@ -1,4 +1,5 @@
 import { deployContract, findDeployedContract } from '@midnight-ntwrk/midnight-js-contracts';
+// PLS READ THE COMMENTS
 import type { MidnightProviders } from '@midnight-ntwrk/midnight-js-types';
 import { witnesses, createBlindMindPrivateState } from './witness.js';
 
@@ -16,7 +17,18 @@ export type DeployResult = {
   txHash: string;
 };
 
-// @Saiem: Call this from your React frontend when the user clicks the initial button to spin up a completely new instance on the blockchain network.
+function hexToBytes32(hex: string): Uint8Array {
+  if (hex.length !== 64) {
+    throw new Error(`expected 64 hex chars (32 bytes), got ${hex.length}`);
+  }
+  const bytes = new Uint8Array(32);
+  for (let i = 0; i < 32; i++) {
+    bytes[i] = parseInt(hex.substring(i * 2, i * 2 + 2), 16);
+  }
+  return bytes;
+}
+
+// Saiem call this from your react frontend when the user clicks the initial button to spin up a completely new instance on the blockchain network.
 // You need to pass the provider object (wallet connection context), the user's wallet public key buffer, and the score array from Rima's AI.
 export async function deployBlindMindContract(
   providers: BlindMindContractProviders,
@@ -45,7 +57,7 @@ export async function deployBlindMindContract(
   return { contractAddress, txHash };
 }
 
-// saiem use this endpoint if you are rendering an existing screen where the app is already tracking a live deployed contract, 
+// saiem use this endpoint if you are rendering an existing screen where the app is already tracking a live deployed contract,
 // and you just want to tie a returning user's local workspace state back into the active interface view.
 export async function joinBlindMindContract(
   providers: BlindMindContractProviders,
@@ -70,16 +82,37 @@ export async function joinBlindMindContract(
 async function main() {
   const walletIdArg = process.env.MN_WALLET_ID_HEX;
   const scoreArg = process.env.MN_INITIAL_SCORE;
+  const modeArg = process.env.MN_MODE ?? 'deploy'; // 'deploy' or 'join'
+  const contractAddressArg = process.env.MN_CONTRACT_ADDRESS;
 
   if (!walletIdArg || walletIdArg.length !== 64) {
     throw new Error('MN_WALLET_ID_HEX env var must be a 64-char hex string (32 bytes)');
   }
 
+  const walletId = hexToBytes32(walletIdArg);
+  const initialScore = scoreArg ? parseInt(scoreArg, 10) : 0;
+
   console.log(`Deploying against RPC: ${DEVNODE_RPC_URL}`);
   console.log(`Indexer: ${INDEXER_URL}`);
+  console.log(`Proof server: ${PROOF_SERVER_URL}`);
+
+  // NOTE: providers must be constructed via your environment's provider
+  // factory (wallet, proof, indexer, node) before this will run for real.
+  // This throws intentionally until that wiring lands — replace the line
+  // below once the provider factory exists.
+  throw new Error(
+    'providers factory not wired yet — construct wallet/proof/indexer/node providers before calling deployBlindMindContract'
+  );
+
+  // Once providers exist, uncomment:
+  // if (modeArg === 'join' && contractAddressArg) {
+  //   await joinBlindMindContract(providers, contractAddressArg, walletId, initialScore);
+  // } else {
+  //   await deployBlindMindContract(providers, walletId, initialScore);
+  // }
 }
 
-if (import.meta.url === `file://${process.argv}`) {
+if (import.meta.url === `file://${process.argv[1]}`) {
   main().catch((err) => {
     console.error('Deployment failed:', err);
     process.exit(1);

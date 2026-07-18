@@ -9,10 +9,11 @@ from transformers import pipeline
 MODEL_NAME = "distilbert-base-uncased-finetuned-sst-2-english"
 MAX_TOKENS_PER_CHUNK = 480
 CHUNK_OVERLAP = 40
+MAX_FILE_SIZE_BYTES = 2 * 1024 * 1024  # 2MB
 
 app = FastAPI(title="BlindMind Health Analyzer", version="0.1.0")
 
-# Enables Saiem's frontend workspace container to fetch data safely
+# Enables saiem's frontend workspace container to fetch data safely
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://localhost:3000"],
@@ -36,7 +37,7 @@ def chunk_text(raw_text: str) -> list[str]:
     token_ids = tokenizer.encode(raw_text, add_special_tokens=False)
     if not token_ids:
         raise ValueError("Input text produced empty token sequences.")
-    
+
     chunks: list[str] = []
     start = 0
     step = MAX_TOKENS_PER_CHUNK - CHUNK_OVERLAP
@@ -47,6 +48,11 @@ def chunk_text(raw_text: str) -> list[str]:
         if end == len(token_ids):
             break
         start += step
+
+    chunks = [c for c in chunks if c.strip()]
+    if not chunks:
+        raise ValueError("No usable text content after chunking.")
+
     return chunks
 
 def compute_wellness_score(chunks: list[str]) -> int:
@@ -62,11 +68,15 @@ def compute_wellness_score(chunks: list[str]) -> int:
 async def analyze(wallet_pubkey: str, file: UploadFile = File(...)):
     if file.content_type not in ("text/plain", "application/octet-stream"):
         raise HTTPException(status_code=400, detail="Sandbox only accepts plain text (.txt) files.")
-    
+
     raw_bytes = await file.read()
+
+    if len(raw_bytes) > MAX_FILE_SIZE_BYTES:
+        raise HTTPException(status_code=413, detail="File exceeds 2MB limit.")
+
     if not raw_bytes:
         raise HTTPException(status_code=400, detail="Target text payload is empty.")
-    
+
     try:
         raw_text = raw_bytes.decode("utf-8")
     except UnicodeDecodeError:
@@ -79,8 +89,8 @@ async def analyze(wallet_pubkey: str, file: UploadFile = File(...)):
 
     wellness_score = compute_wellness_score(chunks)
     timestamp = datetime.now(timezone.utc).isoformat()
-    
-    # Rafan's Fix: Generate the hash directly from the stable text bytes.
+
+    # Hash generated directly from the stable text bytes.
     # This matches the Bytes<32> registerHealthAnchor structure in main.compact.
     record_commitment_hash = hashlib.sha256(raw_bytes).hexdigest()
     wallet_id_hash = hashlib.sha256(wallet_pubkey.encode("utf-8")).hexdigest()
