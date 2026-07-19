@@ -1,0 +1,23 @@
+GUYS YOU CAN CHANGE BUT MAKE SURE YOU ASK THE TEAM OR MAKE SURE YOU KEEP A BACKUP
+
+Hackathon/
+├── blindmind-health/
+│   └── backend/
+│       ├── main.py            # FastAPI Application Entrypoint
+│       ├── ai_engine.py       # Dual-Engine LLM & Keyword Fallback Logic
+│       └── zk_crypto.py       # SHA-256 State Hashing & Salt Generation
+├── frontend/
+│   └── src/
+│       ├── components/
+│       │   ├── ErrorBanner.jsx
+│       │   └── PrivacyBadge.jsx
+│       ├── hooks/
+│       │   ├── useHistory.js
+│       │   └── useReflection.js
+│       ├── services/
+│       │   ├── api.js
+│       │   └── zkPayload.js
+│       ├── App.jsx            # Master Dashboard & Midnight Handoff Layout
+│       └── main.jsx
+├── HACKATHON_GUIDE.md         # Internal Team Practical Handbook (Below)
+└── README.md                  # Project Root Readme (Below)
