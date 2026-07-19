@@ -8,15 +8,12 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from config import (
-    LOCAL_MODEL_NAME,
-    CLOUD_API_URL,
-    HF_API_TOKEN,
-    LOCAL_TIMEOUT_SECONDS,
-    LOCAL_MAX_NEW_TOKENS,
-    CLOUD_MAX_NEW_TOKENS,
-    CLOUD_TIMEOUT_SECONDS,
+    LOCAL_MODEL_NAME, CLOUD_API_URL, HF_API_TOKEN,
+    LOCAL_TIMEOUT_SECONDS, LOCAL_MAX_NEW_TOKENS,
+    CLOUD_MAX_NEW_TOKENS, CLOUD_TIMEOUT_SECONDS,
     STRUCTURED_OUTPUT_INSTRUCTIONS,
 )
+from ooda_client import call_ooda_inference, OodaNotConfiguredError
 
 logger = logging.getLogger("ai_engine")
 
@@ -29,19 +26,10 @@ REQUIRED_KEYS = {
     "anxiety_score", "resilience_score", "themes",
 }
 
-# engine_used values returned to the frontend / stored in history.
-# "local"    -> the guaranteed on-device keyword-heuristic engine below.
-#               Raw text never leaves the machine for this path.
-# "fallback" -> the secure cloud API failover, used when it succeeds.
-ENGINE_LOCAL = "local"
-ENGINE_FALLBACK = "fallback"
+MAX_HISTORY_TURNS = 25  # bound prompt size for multi-turn context
 
 
 def load_model():
-    """Best-effort local model load, reserved for a future on-device LLM
-    upgrade path (see local_generate() below). Failure here does NOT
-    crash the server — requests simply keep using the lightweight
-    keyword-heuristic local engine as today."""
     global _model, _tokenizer
     try:
         logger.info(f"Loading local LLM: {LOCAL_MODEL_NAME} ...")
@@ -55,6 +43,28 @@ def load_model():
         logger.warning(f"Local model failed to load, local engine disabled: {exc}")
         _model = None
         _tokenizer = None
+
+
+def _extract_last_user_message(messages: list[dict]) -> str:
+    for m in reversed(messages):
+        if m.get("role") == "user" and m.get("content", "").strip():
+            return m["content"].strip()
+    raise ValueError("messages contains no non-empty user turn")
+
+
+def _build_prompt(messages: list[dict]) -> str:
+    
+    trimmed = messages[-MAX_HISTORY_TURNS:]
+    convo_lines = [
+        f"{'User' if m['role'] == 'user' else 'Assistant'}: {m['content']}"
+        for m in trimmed
+    ]
+    convo_text = "\n".join(convo_lines)
+    return (
+        f"<|system|>\n{STRUCTURED_OUTPUT_INSTRUCTIONS}\n"
+        f"Continue this conversation, responding to the latest user message.</s>\n"
+        f"<|user|>\nConversation so far:\n{convo_text}</s>\n<|assistant|>\n"
+    )
 
 
 def _parse_structured(raw_text: str) -> dict:
@@ -79,20 +89,13 @@ def _parse_structured(raw_text: str) -> dict:
     return data
 
 
-def _local_worker(journal_text: str) -> dict:
-    prompt = (
-        f"<|system|>\n{STRUCTURED_OUTPUT_INSTRUCTIONS}</s>\n"
-        f"<|user|>\nJournal entry: \"{journal_text}\"</s>\n<|assistant|>\n"
-    )
-    inputs = _tokenizer(prompt, return_tensors="pt", truncation=True, max_length=1024)
+def _local_worker(messages: list[dict]) -> dict:
+    prompt = _build_prompt(messages)
+    inputs = _tokenizer(prompt, return_tensors="pt", truncation=True, max_length=1536)
     with torch.no_grad():
         output_ids = _model.generate(
-            **inputs,
-            max_new_tokens=LOCAL_MAX_NEW_TOKENS,
-            do_sample=True,
-            temperature=0.7,
-            top_p=0.9,
-            repetition_penalty=1.15,
+            **inputs, max_new_tokens=LOCAL_MAX_NEW_TOKENS, do_sample=True,
+            temperature=0.7, top_p=0.9, repetition_penalty=1.15,
             pad_token_id=_tokenizer.eos_token_id,
         )
     decoded = _tokenizer.decode(output_ids[0], skip_special_tokens=True)
@@ -101,13 +104,10 @@ def _local_worker(journal_text: str) -> dict:
     return _parse_structured(reply)
 
 
-def local_generate(journal_text: str) -> dict:
-    """On-device transformer path. Not currently wired into
-    generate_reflection() — kept available for a future upgrade of the
-    keyword-heuristic local engine to a real local LLM."""
+def local_generate(messages: list[dict]) -> dict:
     if _model is None or _tokenizer is None:
         raise RuntimeError("local model not loaded")
-    future = _executor.submit(_local_worker, journal_text)
+    future = _executor.submit(_local_worker, messages)
     try:
         result = future.result(timeout=LOCAL_TIMEOUT_SECONDS)
         gc.collect()
@@ -117,14 +117,10 @@ def local_generate(journal_text: str) -> dict:
         raise TimeoutError(f"local generation exceeded {LOCAL_TIMEOUT_SECONDS}s")
 
 
-def cloud_generate(journal_text: str) -> dict:
+def cloud_generate(messages: list[dict]) -> dict:
     if not HF_API_TOKEN:
-        raise RuntimeError("HF_API_TOKEN not set — cannot call cloud engine")
-
-    prompt = (
-        f"<|system|>\n{STRUCTURED_OUTPUT_INSTRUCTIONS}</s>\n"
-        f"<|user|>\nJournal entry: \"{journal_text}\"</s>\n<|assistant|>\n"
-    )
+        raise RuntimeError("HF_API_TOKEN not set")
+    prompt = _build_prompt(messages)
     resp = requests.post(
         CLOUD_API_URL,
         headers={"Authorization": f"Bearer {HF_API_TOKEN}"},
@@ -135,64 +131,68 @@ def cloud_generate(journal_text: str) -> dict:
     result = resp.json()
     if isinstance(result, dict) and "error" in result:
         raise RuntimeError(f"HF API error: {result['error']}")
-
     generated_text = result[0]["generated_text"].split("<|assistant|>")[-1]
     return _parse_structured(generated_text)
 
 
-def generate_reflection(journal_text: str) -> dict:
-    """
-    Dual-engine execution with an honest failure mode:
+def _dynamic_fallback(latest_user_text: str) -> dict:
+    text_lower = latest_user_text.lower()
+    themes, mood, anxiety, resilience = [], 6, 4, 7
 
-    1. Attempt the secure Cloud API for rich, high-fidelity insights.
-    2. If it's unavailable, rate-limited, or times out, fail over to the
-       local keyword-heuristic engine (engine_used='local') — this is
-       instant, has zero network dependency, and guarantees the demo
-       never 500s on a flaky connection.
-    3. If somehow both paths raise, we do NOT fabricate scores. The
-       caller (main.py) turns this into an honest 503 instead.
-    """
-    # 1. Try Cloud Generation first for high-quality responses if a token is configured.
-    if HF_API_TOKEN:
-        try:
-            logger.info("Attempting secure Cloud API inference...")
-            data = cloud_generate(journal_text)
-            data["engine_used"] = ENGINE_FALLBACK
-            return data
-        except Exception as exc:
-            logger.warning(f"Cloud engine failed or timed out ({exc}). Dropping to local engine...")
+    if any(w in text_lower for w in ("stress", "deadline", "overwhelmed")):
+        themes += ["stress", "overwhelm"]
+        mood -= 2
+        anxiety += 4
+    if any(w in text_lower for w in ("healthy", "rest", "proud", "calm")):
+        themes += ["calm", "pride"]
+        mood += 1
+        resilience += 2
+    if any(w in text_lower for w in ("sad", "down", "tired", "lonely")):
+        themes += ["sadness"]
+        mood -= 1
+        resilience -= 1
 
-    # 2. Local Fallback: fast, local keyword parsing (zero network dependency, guaranteed 200 OK).
+    return {
+        "conversation": "I'm having trouble reaching our AI engines right now, but I'm still listening — thank you for sharing this.",
+        "feedback": "Take a moment to breathe while we reconnect to a full analysis engine.",
+        "mood_score": max(0, min(10, mood)),
+        "anxiety_score": max(0, min(10, anxiety)),
+        "resilience_score": max(0, min(10, resilience)),
+        "themes": list(set(themes)) or ["reflective"],
+    }
+
+
+def generate_reflection(messages: list[dict]) -> dict:
+    
+    if not messages:
+        raise ValueError("messages must be a non-empty list")
+
+    latest_user_text = _extract_last_user_message(messages)
+
     try:
-        logger.info("Executing local analytical fallback logic...")
-        text_lower = journal_text.lower()
-        themes = []
+        result = call_ooda_inference(latest_user_text)
+        data = _parse_structured(result["content"])
+        data["engine_used"] = "ooda_tee"
+        return data
+    except OodaNotConfiguredError:
+        logger.info("OODA AI not configured, trying local engine")
+    except Exception as exc:
+        logger.warning(f"OODA AI call failed ({exc}), trying local engine")
 
-        # Simple dynamic heuristics so scores change based on input text
-        mood = 6
-        anxiety = 4
-        resilience = 7
+    try:
+        data = local_generate(messages)
+        data["engine_used"] = "local"
+        return data
+    except Exception as exc:
+        logger.warning(f"Local engine failed ({exc}), trying cloud")
 
-        if "stress" in text_lower or "deadline" in text_lower or "overwhelmed" in text_lower:
-            themes.extend(["stress", "overwhelm"])
-            mood -= 2
-            anxiety += 4
-        if "healthy" in text_lower or "rest" in text_lower or "proud" in text_lower:
-            themes.extend(["calm", "pride"])
-            mood += 1
-            resilience += 2
+    try:
+        data = cloud_generate(messages)
+        data["engine_used"] = "cloud"
+        return data
+    except Exception as exc:
+        logger.warning(f"Cloud engine also failed ({exc}), using dynamic fallback")
 
-        themes = list(set(themes)) or ["reflective"]
-
-        return {
-            "conversation": "I hear that you are balancing structural deadlines with healthy self-care. It takes a lot of awareness to notice both sides.",
-            "feedback": "Make sure to intentionally step away from the screen for 10 minutes after this milestone.",
-            "mood_score": max(0, min(10, mood)),
-            "anxiety_score": max(0, min(10, anxiety)),
-            "resilience_score": max(0, min(10, resilience)),
-            "themes": themes,
-            "engine_used": ENGINE_LOCAL,
-        }
-    except Exception as local_exc:
-        logger.error(f"Critical error: {local_exc}")
-        raise RuntimeError("Fallback engine routing loop failure.") from local_exc
+    data = _dynamic_fallback(latest_user_text)
+    data["engine_used"] = "heuristic_fallback"
+    return data

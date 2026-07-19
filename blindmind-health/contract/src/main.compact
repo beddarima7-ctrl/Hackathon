@@ -2,30 +2,26 @@ pragma language_version >= 0.16 && <= 0.31;
 
 import CompactStandardLibrary;
 
-// Public ledger state tracking verified metadata anchors
 export ledger healthAnchors: Map<Bytes<32>, Boolean>;
 export ledger qualificationEvents: Map<Bytes<32>, Uint<64>>;
 export ledger round: Counter;
 
-// Private state via local witnesses
 witness localWalletId(): Bytes<32>;
 witness localWellnessScore(): Uint<8>;
 
-// Circuit 1: Anchor the text hash from Rima's AI backend
+// Circuit 1 Anchor the text hash from Rima's AI backend
 export circuit registerHealthAnchor(commitmentHash: Bytes<32>): [] {
   healthAnchors.insert(disclose(commitmentHash), true);
 }
 
-// Circuit 2: ZK validation gate against the threshold
+// Circuit 2 ZK validation gate against the threshold
 export circuit evaluate_health_score(threshold: Uint<8>): [] {
   const walletId = localWalletId();
   const score = localWellnessScore();
-
-  // Guard rails keep the raw score private inside the circuit math checks
+  
   assert(score <= 100, "score out of bounds");
   assert(score >= threshold, "score below required threshold");
-
-  // Update public ledger without exposing the raw score
+  
   qualificationEvents.insert(disclose(walletId), round.read());
   round.increment(1);
 }
