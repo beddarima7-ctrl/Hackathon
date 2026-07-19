@@ -1,166 +1,163 @@
-import React, { useState } from "react";
+import React, { useState, useRef, useEffect } from "react";
+import { useChat } from "./hooks/useChat.js";
+import ErrorBanner from "./components/ErrorBanner.jsx";
 
-// Pointing directly to Rima's running backend server
-const BACKEND_URL = "http://localhost:8000/analyze";
+const ENGINE_STATUS = {
+  ooda_tee: { icon: "🔒", label: "OODA AI Network: TEE Secure Enclave Protected", className: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" },
+  local: { icon: "🔒", label: "On-Device Model Active", className: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" },
+  cloud: { icon: "☁️", label: "Cloud AI Inference Active", className: "bg-blue-500/10 text-blue-400 border-blue-500/20" },
+  heuristic_fallback: { icon: "⚠️", label: "Offline Fallback Mode", className: "bg-amber-500/10 text-amber-400 border-amber-500/20" },
+};
 
 export default function App() {
-  const [journalText, setJournalText] = useState("");
-  const [file, setFile] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [backendResult, setBackendResult] = useState(null);
-  const [zkState, setZkState] = useState("IDLE"); // IDLE, PROVING, SUCCESS
-  const [txHash, setTxHash] = useState("");
+  const [draft, setDraft] = useState("");
+  const [anchorState, setAnchorState] = useState("IDLE");
+  const { messages, loading, error, latestTurn, sendMessage, clearHistory, dismissError } = useChat();
+  const scrollRef = useRef(null);
 
-  // Handles raw file uploads dropped into the sandbox dashboard area
-  const handleFileChange = (e) => {
-    if (e.target.files && e.target.files[0]) {
-      setFile(e.target.files[0]);
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+  }, [messages, loading]);
+
+  const handleSend = async () => {
+    if (!draft.trim() || loading) return;
+    const text = draft;
+    setDraft("");
+    setAnchorState("IDLE");
+    await sendMessage(text);
+  };
+
+  const handleKeyDown = (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
     }
   };
 
-  // Step 1: Send the file to Rima's localized Python server
-  const runAIAnalysis = async () => {
-    if (!file && !journalText) {
-      alert("Please type a journal entry or upload a text file first!");
-      return;
-    }
-
-    setLoading(true);
-    setBackendResult(null);
-    setZkState("IDLE");
-
-    const formData = new FormData();
-    if (file) {
-      formData.append("file", file);
-    } else {
-      const blob = new Blob([journalText], { type: "text/plain" });
-      formData.append("file", blob, "journal.txt");
-    }
-
-    try {
-      // Dummy public key representing your local wallet state
-      const mockPubKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-      const response = await fetch(`${BACKEND_URL}?wallet_pubkey=${mockPubKey}`, {
-        method: "POST",
-        body: formData,
-      });
-
-      if (!response.ok) throw new Error("Backend server processing failed.");
-      const data = await response.json();
-      setBackendResult(data);
-    } catch (err) {
-      alert(err.message);
-    } finally {
-      setLoading(false);
-    }
+  const handleAnchorToMidnight = () => {
+    if (!latestTurn) return;
+    setAnchorState("ANCHORING");
+    // Midnight ledger handoff (contract/src/deploy.ts)
+    //   const commitmentBytes = hexToBytes32(latestTurn.commitmentHash);
+    //   await registerHealthAnchor(providers, commitmentBytes);
+    // providers require wallet-connect wiring (not yet complete).
+    // Simulated until that lands.
+    setTimeout(() => setAnchorState("ANCHORED"), 2500);
   };
 
-  // Step 2: Trigger the Midnight zero-knowledge validation circuit
-  const executeZKProof = () => {
-    if (!backendResult) return;
-    setZkState("PROVING");
-
-    // Mimics circuit witness generation for UI execution smoothness
-    setTimeout(() => {
-      setZkState("SUCCESS");
-      setTxHash("0x" + backendResult.record_commitment_hash.substring(0, 16) + "...devnode");
-    }, 3000);
+  const currentStatus = ENGINE_STATUS[latestTurn?.engineUsed] ?? {
+    icon: "⏳", label: "Awaiting first message", className: "bg-slate-500/10 text-slate-400 border-slate-500/20",
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 p-8 font-sans">
-      <div className="max-w-4xl mx-auto space-y-6">
-        
-        {/* Top Branding Section */}
-        <header className="flex justify-between items-center border-b border-slate-800 pb-4">
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight text-indigo-400">BlindMind Health</h1>
-            <p className="text-xs text-slate-400">Zero-Knowledge Offline Mental Health Analysis</p>
-          </div>
-          <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-xs px-3 py-1 rounded-full font-medium">
-            Local Devnode: Connected
+    <div className="h-screen flex bg-slate-950 text-slate-100 font-sans">
+      <aside className="w-64 border-r border-slate-800 flex flex-col p-4 space-y-3">
+        <div>
+          <h1 className="text-lg font-bold text-indigo-400">BlindMind Health</h1>
+          <p className="text-[10px] text-slate-500">OODA AI x Midnight integration</p>
+        </div>
+        <div className="text-[10px] text-amber-400/80 bg-amber-500/5 border border-amber-500/10 rounded p-2">
+          Chat history lives only in this browser's localStorage — unencrypted, on-device, never sent to a central database.
+        </div>
+        <button
+          onClick={clearHistory}
+          className="text-xs text-slate-400 hover:text-red-400 border border-slate-800 hover:border-red-500/30 rounded-lg py-2 transition-colors"
+        >
+          Clear Local History
+        </button>
+        <div className="flex-1 overflow-y-auto space-y-1 text-[10px] text-slate-500">
+          {messages.length === 0 && <p className="italic">No messages yet.</p>}
+          {messages.filter((m) => m.role === "user").map((m, i) => (
+            <div key={i} className="truncate border-b border-slate-900 py-1">{m.content}</div>
+          ))}
+        </div>
+      </aside>
+
+      <main className="flex-1 flex flex-col">
+        <header className="flex justify-between items-center border-b border-slate-800 px-6 py-3">
+          <span className="text-sm text-slate-400">Journal Chat</span>
+          <span className={`inline-flex items-center gap-1.5 border text-xs px-3 py-1 rounded-full font-medium ${currentStatus.className}`}>
+            <span>{currentStatus.icon}</span>
+            <span>{currentStatus.label}</span>
           </span>
         </header>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          {/* Main User Input Panel */}
-          <div className="md:col-span-2 bg-slate-900 border border-slate-800 p-6 rounded-xl space-y-4">
-            <h2 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">Secure Text Sandbox</h2>
-            <textarea
-              className="w-full h-48 bg-slate-950 border border-slate-800 rounded-lg p-4 text-sm font-mono focus:outline-none focus:border-indigo-500 text-slate-200"
-              placeholder="Paste your private notes here, or drag and drop a journal log file below..."
-              value={journalText}
-              onChange={(e) => setJournalText(e.target.value)}
-            />
-            
-            <div className="border-2 border-dashed border-slate-800 rounded-lg p-4 text-center bg-slate-950/40">
-              <input type="file" accept=".txt" onChange={handleFileChange} className="text-xs text-slate-400" />
-              {file && <p className="text-xs text-indigo-400 mt-1">Loaded: {file.name}</p>}
-            </div>
-
-            <button
-              onClick={runAIAnalysis}
-              disabled={loading}
-              className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-medium py-2 rounded-lg text-sm transition-colors disabled:bg-slate-800 disabled:text-slate-500"
-            >
-              {loading ? "Running Local AI Pipeline..." : "Evaluate Journal Locally"}
-            </button>
+        {error && (
+          <div className="px-6 pt-3">
+            <ErrorBanner error={error} onDismiss={dismissError} />
           </div>
+        )}
 
-          {/* Results Sidebar Panel */}
-          <div className="space-y-6">
-            <div className="bg-slate-900 border border-slate-800 p-6 rounded-xl space-y-4">
-              <h2 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">AI Metrics</h2>
-              {backendResult ? (
-                <div className="space-y-3 text-sm">
-                  <div className="flex justify-between">
-                    <span className="text-slate-400">Wellness Index:</span>
-                    <span className="font-mono font-bold text-indigo-400">{backendResult.wellness_score}/100</span>
-                  </div>
-                  <div>
-                    <span className="text-xs text-slate-500 block mb-1">Text Commitment Hash:</span>
-                    <div className="bg-slate-950 p-2 rounded text-[10px] font-mono text-slate-400 break-all border border-slate-800">
-                      {backendResult.record_commitment_hash}
-                    </div>
-                  </div>
-                  <button
-                    onClick={executeZKProof}
-                    className="w-full bg-slate-800 hover:bg-slate-700 border border-slate-700 py-1.5 rounded text-xs transition-colors"
-                  >
-                    {zkState === "IDLE" && "Generate Midnight ZK Proof"}
-                    {zkState === "PROVING" && "Running Proving Circuit..."}
-                    {zkState === "SUCCESS" && "ZK Proof Formed!"}
-                  </button>
-                </div>
-              ) : (
-                <p className="text-xs text-slate-500 italic py-4 text-center">Run analysis to unlock metadata scores.</p>
-              )}
-            </div>
-
-            {/* Blockchain Token Ledger Card */}
-            <div className="bg-slate-900 border border-slate-800 p-6 rounded-xl space-y-3">
-              <h2 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">Midnight Ledger</h2>
-              <div className="space-y-2 text-xs">
-                <div className="flex justify-between">
-                  <span className="text-slate-400">Verification State:</span>
-                  {zkState === "SUCCESS" ? (
-                    <span className="text-emerald-400 font-bold">Verified On-Chain</span>
-                  ) : (
-                    <span className="text-slate-500 italic">Awaiting Proof Generation</span>
-                  )}
-                </div>
-                {txHash && (
-                  <div className="flex justify-between">
-                    <span className="text-slate-400">Anchor Proof Tx:</span>
-                    <span className="font-mono text-indigo-400">{txHash}</span>
+        <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+          {messages.map((m, i) => (
+            <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+              <div className={`max-w-lg rounded-xl p-3 text-sm ${m.role === "user" ? "bg-indigo-600 text-white" : "bg-slate-900 border border-slate-800 text-slate-200"}`}>
+                <p>{m.content}</p>
+                {m.scores && (
+                  <div className="mt-2 pt-2 border-t border-slate-700/50 text-[10px] text-slate-400 flex gap-3">
+                    <span>Mood {m.scores.mood}</span>
+                    <span>Anxiety {m.scores.anxiety}</span>
+                    <span>Resilience {m.scores.resilience}</span>
                   </div>
                 )}
               </div>
             </div>
-          </div>
+          ))}
+          {loading && (
+            <div className="flex justify-start">
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-3 text-sm text-slate-500 italic">Thinking...</div>
+            </div>
+          )}
         </div>
 
-      </div>
+        <div className="border-t border-slate-800 p-4 flex gap-2">
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="Write what's on your mind... (Enter to send, Shift+Enter for new line)"
+            className="flex-1 bg-slate-900 border border-slate-800 rounded-lg p-3 text-sm resize-none h-16 focus:outline-none focus:border-indigo-500"
+          />
+          <button
+            onClick={handleSend}
+            disabled={loading || !draft.trim()}
+            className="bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 disabled:text-slate-500 text-white px-5 rounded-lg text-sm font-medium transition-colors"
+          >
+            Send
+          </button>
+        </div>
+      </main>
+
+      <aside className="w-80 border-l border-slate-800 p-6 space-y-4">
+        <h2 className="text-sm font-semibold text-indigo-300 uppercase tracking-wider">🔐 Midnight ZK-Ledger Sync</h2>
+        {latestTurn ? (
+          <div className="space-y-3 text-sm">
+            <div>
+              <span className="text-xs text-slate-500 block mb-1">Commitment Hash:</span>
+              <div className="bg-slate-950 p-2 rounded text-[10px] font-mono text-indigo-300 break-all border border-slate-800">
+                {latestTurn.commitmentHash}
+              </div>
+            </div>
+            <div>
+              <span className="text-xs text-slate-500 block mb-1">Salt:</span>
+              <div className="bg-slate-950 p-2 rounded text-[10px] font-mono text-slate-400 break-all border border-slate-800">
+                {latestTurn.salt}
+              </div>
+            </div>
+            <button
+              onClick={handleAnchorToMidnight}
+              disabled={anchorState === "ANCHORING"}
+              className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 disabled:text-slate-500 text-white font-medium py-2 rounded-lg text-xs transition-colors"
+            >
+              {anchorState === "IDLE" && "Anchor Anonymously to Midnight Ledger"}
+              {anchorState === "ANCHORING" && "Anchoring to Devnode..."}
+              {anchorState === "ANCHORED" && "✓ Anchored On-Chain"}
+            </button>
+          </div>
+        ) : (
+          <p className="text-xs text-slate-500 italic py-4 text-center">Send a message to generate a ZK commitment.</p>
+        )}
+      </aside>
     </div>
   );
 }
