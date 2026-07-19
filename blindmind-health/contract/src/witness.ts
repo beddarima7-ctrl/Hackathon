@@ -1,34 +1,41 @@
+// witnesses.ts
+// BlindMind Health — private state + witness wiring for health_commitment.compact
+// Owner: Rima
+//
+// Witnesses run LOCALLY in the DApp. Whatever they return never leaves
+// the user's machine as plaintext — only the proof and whatever the
+// circuit explicitly disclose()s (the commitment hash) does.
+
 import type { WitnessContext } from '@midnight-ntwrk/compact-runtime';
-import type { Ledger } from '../managed/main/contract/index.js';
 
-export type BlindMindPrivateState = {
-  readonly walletId: Uint8Array;
-  readonly wellnessScore: number;
+export type HealthPrivateState = {
+  readonly mood: number;       // 0-255, matches Uint<8> in the circuit
+  readonly anxiety: number;
+  readonly resilience: number;
+  readonly salt: Uint8Array;   // 32 bytes, matches Bytes<32>
 };
 
-export const createBlindMindPrivateState = (
-  walletId: Uint8Array,
-  wellnessScore: number
-): BlindMindPrivateState => {
-  if (walletId.length !== 32) {
-    throw new Error('walletId must be exactly 32 bytes');
-  }
-  if (!Number.isInteger(wellnessScore) || wellnessScore < 0 || wellnessScore > 100) {
-    throw new Error('wellnessScore must be an integer between 0 and 100');
-  }
-  return { walletId, wellnessScore };
-};
+export const createHealthPrivateState = (
+  mood: number,
+  anxiety: number,
+  resilience: number,
+  salt: Uint8Array,
+): HealthPrivateState => ({ mood, anxiety, resilience, salt });
 
 export const witnesses = {
-  localWalletId(
-    context: WitnessContext<Ledger, BlindMindPrivateState>
-  ): [BlindMindPrivateState, Uint8Array] {
-    return [context.privateState, context.privateState.walletId];
-  },
+  localMoodScore: (
+    { privateState }: WitnessContext<HealthPrivateState>,
+  ): [HealthPrivateState, bigint] => [privateState, BigInt(privateState.mood)],
 
-  localWellnessScore(
-    context: WitnessContext<Ledger, BlindMindPrivateState>
-  ): [BlindMindPrivateState, bigint] {
-    return [context.privateState, BigInt(context.privateState.wellnessScore)];
-  }
+  localAnxietyScore: (
+    { privateState }: WitnessContext<HealthPrivateState>,
+  ): [HealthPrivateState, bigint] => [privateState, BigInt(privateState.anxiety)],
+
+  localResilienceScore: (
+    { privateState }: WitnessContext<HealthPrivateState>,
+  ): [HealthPrivateState, bigint] => [privateState, BigInt(privateState.resilience)],
+
+  localSalt: (
+    { privateState }: WitnessContext<HealthPrivateState>,
+  ): [HealthPrivateState, Uint8Array] => [privateState, privateState.salt],
 };

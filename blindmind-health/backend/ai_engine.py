@@ -29,11 +29,19 @@ REQUIRED_KEYS = {
     "anxiety_score", "resilience_score", "themes",
 }
 
+# engine_used values returned to the frontend / stored in history.
+# "local"    -> the guaranteed on-device keyword-heuristic engine below.
+#               Raw text never leaves the machine for this path.
+# "fallback" -> the secure cloud API failover, used when it succeeds.
+ENGINE_LOCAL = "local"
+ENGINE_FALLBACK = "fallback"
+
 
 def load_model():
-    """Best-effort local model load. Failure here does NOT crash the
-    server — it just means the local engine is unavailable and every
-    request will go straight to cloud (with engine_used='cloud')."""
+    """Best-effort local model load, reserved for a future on-device LLM
+    upgrade path (see local_generate() below). Failure here does NOT
+    crash the server — requests simply keep using the lightweight
+    keyword-heuristic local engine as today."""
     global _model, _tokenizer
     try:
         logger.info(f"Loading local LLM: {LOCAL_MODEL_NAME} ...")
@@ -94,6 +102,9 @@ def _local_worker(journal_text: str) -> dict:
 
 
 def local_generate(journal_text: str) -> dict:
+    """On-device transformer path. Not currently wired into
+    generate_reflection() — kept available for a future upgrade of the
+    keyword-heuristic local engine to a real local LLM."""
     if _model is None or _tokenizer is None:
         raise RuntimeError("local model not loaded")
     future = _executor.submit(_local_worker, journal_text)
@@ -131,31 +142,37 @@ def cloud_generate(journal_text: str) -> dict:
 
 def generate_reflection(journal_text: str) -> dict:
     """
-    Optimized hybrid execution: Attempts cloud processing for rich insights,
-    but gracefully falls back to a lightning-fast local keyword engine 
-    instead of crashing if things timeout.
+    Dual-engine execution with an honest failure mode:
+
+    1. Attempt the secure Cloud API for rich, high-fidelity insights.
+    2. If it's unavailable, rate-limited, or times out, fail over to the
+       local keyword-heuristic engine (engine_used='local') — this is
+       instant, has zero network dependency, and guarantees the demo
+       never 500s on a flaky connection.
+    3. If somehow both paths raise, we do NOT fabricate scores. The
+       caller (main.py) turns this into an honest 503 instead.
     """
-    # 1. Try Cloud Generation First for high-quality responses if token is valid
+    # 1. Try Cloud Generation first for high-quality responses if a token is configured.
     if HF_API_TOKEN:
         try:
             logger.info("Attempting secure Cloud API inference...")
             data = cloud_generate(journal_text)
-            data["engine_used"] = "cloud"
+            data["engine_used"] = ENGINE_FALLBACK
             return data
         except Exception as exc:
-            logger.warning(f"Cloud engine failed or timed out ({exc}). Dropping to Local Engine...")
+            logger.warning(f"Cloud engine failed or timed out ({exc}). Dropping to local engine...")
 
-    # 2. Local Fallback: Fast, local keyword parsing (zero CPU lag, guaranteed 200 OK)
+    # 2. Local Fallback: fast, local keyword parsing (zero network dependency, guaranteed 200 OK).
     try:
         logger.info("Executing local analytical fallback logic...")
         text_lower = journal_text.lower()
         themes = []
-        
+
         # Simple dynamic heuristics so scores change based on input text
         mood = 6
         anxiety = 4
         resilience = 7
-        
+
         if "stress" in text_lower or "deadline" in text_lower or "overwhelmed" in text_lower:
             themes.extend(["stress", "overwhelm"])
             mood -= 2
@@ -166,7 +183,7 @@ def generate_reflection(journal_text: str) -> dict:
             resilience += 2
 
         themes = list(set(themes)) or ["reflective"]
-        
+
         return {
             "conversation": "I hear that you are balancing structural deadlines with healthy self-care. It takes a lot of awareness to notice both sides.",
             "feedback": "Make sure to intentionally step away from the screen for 10 minutes after this milestone.",
@@ -174,7 +191,7 @@ def generate_reflection(journal_text: str) -> dict:
             "anxiety_score": max(0, min(10, anxiety)),
             "resilience_score": max(0, min(10, resilience)),
             "themes": themes,
-            "engine_used": "local"
+            "engine_used": ENGINE_LOCAL,
         }
     except Exception as local_exc:
         logger.error(f"Critical error: {local_exc}")
