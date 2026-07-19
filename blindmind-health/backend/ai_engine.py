@@ -26,11 +26,10 @@ REQUIRED_KEYS = {
     "anxiety_score", "resilience_score", "themes",
 }
 
-MAX_HISTORY_TURNS = 6  # bound prompt size for multi-turn context
+MAX_HISTORY_TURNS = 25  # bound prompt size for multi-turn context
 
 
 def load_model():
-    """Best-effort local model load, called once at FastAPI startup."""
     global _model, _tokenizer
     try:
         logger.info(f"Loading local LLM: {LOCAL_MODEL_NAME} ...")
@@ -47,11 +46,6 @@ def load_model():
 
 
 def _extract_last_user_message(messages: list[dict]) -> str:
-    """
-    messages: [{"role": "user"|"assistant", "content": str}, ...]
-    Returns the content of the most recent role='user' entry.
-    Raises ValueError if none exists.
-    """
     for m in reversed(messages):
         if m.get("role") == "user" and m.get("content", "").strip():
             return m["content"].strip()
@@ -142,10 +136,6 @@ def cloud_generate(messages: list[dict]) -> dict:
 
 
 def _dynamic_fallback(latest_user_text: str) -> dict:
-    """
-    Last-resort fallback if OODA, local, and cloud all fail. Scores and
-    themes vary with the latest user message
-    """
     text_lower = latest_user_text.lower()
     themes, mood, anxiety, resilience = [], 6, 4, 7
 

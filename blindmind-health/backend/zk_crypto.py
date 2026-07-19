@@ -3,20 +3,13 @@ import secrets
 
 
 def generate_salt() -> str:
-    """32 hex chars = 16 bytes, cryptographically random."""
+    """32 hex chars = 16 bytes, cryptographically random"""
     return secrets.token_hex(16)
 
 
 def generate_zk_commitment(mood: int, anxiety: int, resilience: int, salt: str = None) -> str:
     """
     Produces a SHA-256 hex commitment over (mood, anxiety, resilience, salt).
-
-    IMPORTANT: if salt is None, one is generated internally but NOT
-    returned by this function — meaning the resulting hash would be
-    unverifiable later, since nobody could reproduce it without the
-    salt. Always generate the salt via generate_salt() BEFORE calling
-    this, and store/pass it explicitly, so it can be attached to the
-    caller's response rather than lost.
     """
     if salt is None:
         salt = generate_salt()

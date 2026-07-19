@@ -1,5 +1,4 @@
 import { deployContract, findDeployedContract } from '@midnight-ntwrk/midnight-js-contracts';
-// PLS READ THE COMMENTS
 import type { MidnightProviders } from '@midnight-ntwrk/midnight-js-types';
 import { witnesses, createBlindMindPrivateState } from './witness.js';
 
@@ -28,16 +27,13 @@ function hexToBytes32(hex: string): Uint8Array {
   return bytes;
 }
 
-// Saiem call this from your react frontend when the user clicks the initial button to spin up a completely new instance on the blockchain network.
-// You need to pass the provider object (wallet connection context), the user's wallet public key buffer, and the score array from Rima's AI.
 export async function deployBlindMindContract(
   providers: BlindMindContractProviders,
   walletId: Uint8Array,
   initialWellnessScore: number
 ): Promise<DeployResult> {
   const initialPrivateState = createBlindMindPrivateState(walletId, initialWellnessScore);
-
-  // Match the strict v4 deploy specification structure
+  
   const deployed = await deployContract(providers as any, {
     contractArtifacts,
     witnesses,
@@ -57,8 +53,6 @@ export async function deployBlindMindContract(
   return { contractAddress, txHash };
 }
 
-// saiem use this endpoint if you are rendering an existing screen where the app is already tracking a live deployed contract,
-// and you just want to tie a returning user's local workspace state back into the active interface view.
 export async function joinBlindMindContract(
   providers: BlindMindContractProviders,
   contractAddress: string,
@@ -95,11 +89,7 @@ async function main() {
   console.log(`Deploying against RPC: ${DEVNODE_RPC_URL}`);
   console.log(`Indexer: ${INDEXER_URL}`);
   console.log(`Proof server: ${PROOF_SERVER_URL}`);
-
-  // NOTE: providers must be constructed via your environment's provider
-  // factory (wallet, proof, indexer, node) before this will run for real.
-  // This throws intentionally until that wiring lands — replace the line
-  // below once the provider factory exists.
+  
   throw new Error(
     'providers factory not wired yet — construct wallet/proof/indexer/node providers before calling deployBlindMindContract'
   );
